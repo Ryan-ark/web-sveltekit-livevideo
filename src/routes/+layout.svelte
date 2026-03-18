@@ -43,6 +43,10 @@
 					class="rounded-full border border-line px-4 py-2 no-underline transition hover:border-brand hover:bg-brand-soft/40"
 					href="/chat">Chat</a
 				>
+				<a
+					class="rounded-full border border-line px-4 py-2 no-underline transition hover:border-brand hover:bg-brand-soft/40"
+					href="/live">Live</a
+				>
 			{/if}
 			{#if data.auth.permissions.canCreateProjects}
 				<a

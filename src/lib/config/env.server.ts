@@ -21,7 +21,11 @@ const envSchema = z.object({
 	BETTER_AUTH_URL: z.url('BETTER_AUTH_URL must be a valid URL.'),
 	BOOTSTRAP_ADMIN_EMAIL: z.email().optional(),
 	BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).optional(),
-	BOOTSTRAP_ADMIN_NAME: z.string().min(2).optional()
+	BOOTSTRAP_ADMIN_NAME: z.string().min(2).optional(),
+	WEBRTC_STUN_URLS: z.string().optional(),
+	WEBRTC_TURN_URLS: z.string().optional(),
+	WEBRTC_TURN_USERNAME: z.string().optional(),
+	WEBRTC_TURN_CREDENTIAL: z.string().optional()
 });
 
 export type ServerEnv = z.infer<typeof envSchema>;

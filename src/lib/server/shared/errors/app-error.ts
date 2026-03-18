@@ -43,3 +43,9 @@ export class AuthorizationError extends AppError {
 		super(message, 'AUTHORIZATION', 403, details);
 	}
 }
+
+export class ConflictError extends AppError {
+	constructor(message: string, details?: Record<string, unknown>) {
+		super(message, 'CONFLICT', 409, details);
+	}
+}

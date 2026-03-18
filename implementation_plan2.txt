@@ -1,0 +1,619 @@
+Implementation Plan 2: Finish 1:1 Video and Build Live Room Viewing
+
+Date: 2026-03-18
+Project: web-sveltekit-livevideo
+Status: Planning only
+
+1. Purpose
+
+This plan covers the next phase after the current direct-call foundation.
+
+The current codebase has:
+- direct call session persistence
+- Ably signaling for call lifecycle and WebRTC signaling
+- chat page UI for start / accept / decline / end
+- initial camera and peer-connection wiring
+
+But it does not yet have:
+- a stable, fully working 1:1 video call experience
+- a dedicated live room page
+- a one-to-many live viewer experience
+
+This plan is focused on delivering those missing parts cleanly.
+
+2. Current State Summary
+
+2.1 What already exists
+
+Backend:
+- media call session schema
+- media call participant schema
+- direct call service methods
+- media API routes
+- Ably token issuance for call channels
+
+Frontend:
+- call controls on the direct conversation page
+- initial local media capture
+- initial WebRTC offer/answer/ICE event flow
+- local and remote video elements on the chat page
+
+Relevant existing files:
+- src/lib/server/db/schema/media.ts
+- src/lib/server/features/media/media.service.ts
+- src/lib/server/features/media/media.repository.ts
+- src/routes/api/media/calls/+server.ts
+- src/routes/api/media/calls/[callId]/accept/+server.ts
+- src/routes/api/media/calls/[callId]/decline/+server.ts
+- src/routes/api/media/calls/[callId]/end/+server.ts
+- src/routes/api/media/calls/[callId]/connection/+server.ts
+- src/routes/api/media/realtime-token/+server.ts
+- src/routes/chat/[conversationId]/+page.server.ts
+- src/routes/chat/[conversationId]/+page.svelte
+- src/lib/features/media/client/webrtc.ts
+
+2.2 What is not complete yet
+
+1:1 video:
+- not yet verified as stable end-to-end
+- caller flow currently starts device setup early and can feel incomplete/confusing
+- no missed-call timeout
+- no robust reconnect strategy
+- no explicit busy/incoming-call UX outside the conversation page
+- no call diagnostics or signaling trace
+- no mute/camera state propagation to the other participant
+- no device-selection UX
+
+Live room / watch flow:
+- no room schema
+- no room routes
+- no room membership management
+- no broadcaster/watcher roles
+- no host page
+- no viewer page
+- no room-specific signaling namespace
+- no watcher UI
+
+3. Recommended Build Order
+
+Build in this order:
+
+Phase A:
+- finish and stabilize 1:1 video
+
+Phase B:
+- add a dedicated media domain for live rooms
+
+Phase C:
+- build host go-live flow
+
+Phase D:
+- build watcher join flow
+
+Phase E:
+- harden UX, reliability, and operational safety
+
+Reason:
+- a stable 1:1 call proves the signaling/media foundation
+- live rooms should be built on known-good media abstractions, not on an unstable call layer
+
+4. Phase A: Finish 1:1 Video Properly
+
+4.1 Primary goal
+
+Deliver a reliable direct video call between two authenticated users in one direct chat conversation.
+
+4.2 Problems to solve first
+
+Problem 1:
+- caller sees "Calling..." and device activity before the callee has fully joined
+
+Desired behavior:
+- caller can ring first
+- device acquisition can happen either:
+  - immediately after start, if intentional, with clear UI
+  - or only after call is accepted
+
+Recommended choice:
+- acquire camera/mic only after the call becomes `active`
+- keep ringing state separate from media-connection state
+
+Problem 2:
+- accept flow depends on the second user being on the same conversation page
+
+Desired behavior:
+- incoming call should be discoverable clearly
+- minimum acceptable first step:
+  - keep it scoped to the conversation page
+  - but show a stronger incoming-call state there
+
+Better follow-up:
+- global incoming call banner in layout
+
+Problem 3:
+- no clear timeout for unanswered calls
+
+Desired behavior:
+- if not accepted within a timeout window, mark as `missed` or `ended`
+
+Recommended timeout:
+- 30 to 45 seconds
+
+Problem 4:
+- limited peer connection lifecycle handling
+
+Needed:
+- better handling of:
+  - connectionstatechange
+  - iceconnectionstatechange
+  - peer cleanup
+  - stale subscriptions
+  - double accept / double attach
+
+4.3 Concrete implementation tasks for 1:1 video
+
+Task A1: Refactor call state model on the client
+
+Create a clearer client-side call state machine.
+
+Suggested states:
+- idle
+- outgoing_ringing
+- incoming_ringing
+- connecting_media
+- active
+- reconnecting
+- ended
+- failed
+
+Suggested file:
+- src/lib/features/media/client/call-state.ts
+
+Goal:
+- remove mixed UI logic from the page component
+- make transitions explicit
+
+Task A2: Delay media boot until active call
+
+Current issue:
+- camera may open too early
+
+Implementation change:
+- only request `getUserMedia()` after:
+  - callee accepts
+  - server updates call to `active`
+  - active state event is received
+
+Goal:
+- cleaner UX
+- less confusion
+- fewer permission prompts for abandoned rings
+
+Task A3: Add server-driven call timeout
+
+Approach options:
+
+Option 1:
+- lightweight on-read timeout check
+
+Option 2:
+- scheduled cleanup job or cron-like task
+
+Recommended first implementation:
+- when reading/updating a ringing call, if `createdAt` is older than timeout, transition to `missed`
+
+Needed changes:
+- media.service.ts
+- media.repository.ts
+- possibly new helper in media.service
+
+Task A4: Add `GET /api/media/calls/[callId]`
+
+Purpose:
+- fetch latest state for polling/recovery
+
+Use cases:
+- browser refresh during call
+- reconnect after route reload
+- debugging state mismatches
+
+Task A5: Add mute/camera state synchronization
+
+Current status:
+- local mute/camera toggles only affect local tracks
+
+Needed:
+- publish participant media-state events, for example:
+  - `participant.media-state.updated`
+
+Payload:
+- callId
+- userId
+- micEnabled
+- cameraEnabled
+- timestamp
+
+Purpose:
+- show the other user that camera or mic is off
+
+Task A6: Harden signaling flow
+
+Needed safeguards:
+- ignore duplicate offers/answers when already applied
+- protect against race conditions when both tabs reconnect
+- add null checks around peer connection readiness
+- ensure remote stream is rebound after reconnect
+
+Task A7: Add call diagnostics logging
+
+Minimum:
+- debug logs gated to development mode
+- log:
+  - offer created
+  - offer received
+  - answer created
+  - answer received
+  - ICE candidate sent
+  - ICE candidate received
+  - connection state changes
+
+Purpose:
+- make the 1:1 flow debuggable
+
+Task A8: Improve chat page UX for calling
+
+Needed UI improvements:
+- stronger incoming-call card
+- clearer ringing status
+- explicit "Waiting for other participant"
+- explicit "Connecting camera/microphone"
+- explicit error states:
+  - permission denied
+  - busy
+  - connection failed
+
+4.4 Verification checklist for Phase A
+
+Must pass before moving to live rooms:
+
+- two users can complete a 1:1 video call on one machine using two browser sessions
+- call can be accepted and ended cleanly
+- unanswered call times out correctly
+- busy user cannot receive a second simultaneous call
+- caller refresh does not leave the system stuck in a phantom active state
+- mute/camera toggles are reflected in UI state
+- no duplicate subscriptions remain after navigation
+
+5. Phase B: Add Live Room Domain
+
+5.1 Primary goal
+
+Create a domain model for one host going live and selected users being able to watch.
+
+5.2 Important architectural decision
+
+There are two implementation shapes:
+
+Option 1: Small private live rooms using peer-to-peer host-to-viewer connections
+- simpler
+- acceptable for a very small number of viewers
+- host bandwidth and CPU grow per viewer
+
+Option 2: SFU-backed rooms
+- better long-term architecture
+- more scalable
+- more infrastructure work
+
+Recommended for this repo right now:
+- implement a small private live-room version first only if expected viewers are low
+- if not low, skip directly to SFU-backed architecture
+
+5.3 Live room schema to add
+
+Suggested tables:
+
+- media_live_rooms
+  - id
+  - title
+  - createdByUserId
+  - status (`idle`, `live`, `ended`)
+  - visibility (`private`)
+  - createdAt
+  - updatedAt
+
+- media_live_room_members
+  - roomId
+  - userId
+  - accessRole (`host`, `viewer`)
+  - joinStatus (`approved`, `joined`, `left`, `removed`)
+  - createdAt
+  - updatedAt
+
+- media_live_room_sessions
+  - id
+  - roomId
+  - hostUserId
+  - status (`starting`, `live`, `ended`, `failed`)
+  - startedAt
+  - endedAt
+  - endedReason
+  - createdAt
+  - updatedAt
+
+Optional:
+- media_live_room_events
+
+5.4 Live room service layer
+
+Suggested files:
+- src/lib/server/features/live/live.schema.ts
+- src/lib/server/features/live/live.repository.ts
+- src/lib/server/features/live/live.service.ts
+- src/lib/server/features/live/live.types.ts
+
+Core service methods:
+- createRoom
+- getRoom
+- listRoomsForUser
+- addViewer
+- removeViewer
+- startRoomSession
+- endRoomSession
+- assertRoomViewAccess
+- assertRoomHostAccess
+
+6. Phase C: Build Host Go-Live Flow
+
+6.1 Goal
+
+Allow one authenticated user to start a live session from a dedicated page.
+
+6.2 Recommended routes
+
+- src/routes/live/+page.server.ts
+- src/routes/live/+page.svelte
+- src/routes/live/[roomId]/+page.server.ts
+- src/routes/live/[roomId]/+page.svelte
+
+Optional management route:
+- src/routes/live/[roomId]/manage/+page.svelte
+
+6.3 Host page requirements
+
+The host page should allow:
+- creating a room
+- choosing title
+- seeing approved viewers
+- starting live session
+- ending live session
+
+When live:
+- capture camera/mic
+- publish host media
+- show viewer count
+- show live status
+
+6.4 Host-side signaling design
+
+Recommended room/call channels:
+- `private:live-room:{roomId}` for room lifecycle and presence
+- `private:live-session:{sessionId}` for media signaling
+
+Events:
+- `live.started`
+- `live.ended`
+- `viewer.joined`
+- `viewer.left`
+- `webrtc.offer`
+- `webrtc.answer`
+- `webrtc.ice-candidate`
+
+For peer-to-peer viewer model:
+- host maintains one peer connection per viewer
+
+Needed client abstraction:
+- a host-side peer map keyed by viewer userId or viewer connection id
+
+Suggested file:
+- src/lib/features/live/client/live-host-controller.ts
+
+7. Phase D: Build Watcher Join Flow
+
+7.1 Goal
+
+Allow approved users to open a room page and watch the host’s stream.
+
+7.2 Watch page requirements
+
+Viewer page should show:
+- room title
+- host identity
+- live / offline / ended status
+- access denied if not approved
+- waiting state before host starts
+- video player when host is live
+
+7.3 Viewer-side signaling flow
+
+For peer-to-peer version:
+- viewer joins session
+- viewer announces presence
+- host creates or responds to a peer connection for that viewer
+- viewer receives remote stream only
+
+Suggested file:
+- src/lib/features/live/client/live-viewer-controller.ts
+
+7.4 Access control rules
+
+Required rules:
+- only approved viewers can get room token
+- only host can publish upstream media in version 1
+- viewer cannot impersonate host
+
+8. Phase E: Hardening and Usability
+
+8.1 Global incoming-call UX
+
+Current limitation:
+- user must be on the conversation page to see the incoming call clearly
+
+Recommended improvement:
+- add a lightweight global call notifier in layout
+
+Possible approach:
+- layout subscribes to user-specific call summary events
+- clicking notification routes user to the correct conversation
+
+8.2 Room management UX
+
+Needed pages/features:
+- list my live rooms
+- create room
+- approve viewers
+- remove viewers
+- see session history
+
+8.3 Error handling improvements
+
+Need explicit UX for:
+- permission denied
+- no camera available
+- no microphone available
+- other user disconnected
+- host ended session
+- unauthorized viewer
+- live session not started yet
+
+8.4 Mobile and browser behavior
+
+Need testing for:
+- iOS Safari
+- Android Chrome
+- background tab behavior
+- autoplay restrictions on remote media
+
+8.5 Logging and observability
+
+Recommended:
+- add structured server logs around call/room lifecycle
+- add client-side debug mode for signaling/media
+- expose last error to UI in a controlled way
+
+9. Suggested Detailed Task Breakdown
+
+9.1 Immediate next tasks for stable 1:1 video
+
+1. Refactor chat page calling logic into a dedicated controller/state module
+2. Delay `getUserMedia()` until call status becomes `active`
+3. Add missed-call timeout logic in media service
+4. Add fetch endpoint for current call state
+5. Add participant media-state event publishing
+6. Add stronger connection-state handling and cleanup
+7. Test with two users and fix race conditions
+
+9.2 After 1:1 is stable
+
+1. Add live room schema
+2. Add live room service and APIs
+3. Add `/live` listing/creation page
+4. Add `/live/[roomId]` host/viewer page
+5. Add room membership management
+6. Add live session start/end flow
+7. Add peer-to-peer viewer connections or choose SFU path
+
+10. API Plan for the Next Iteration
+
+For direct calls:
+- GET `/api/media/calls/[callId]`
+- POST `/api/media/calls/[callId]/media-state`
+
+For live rooms:
+- POST `/api/live/rooms`
+- GET `/api/live/rooms`
+- GET `/api/live/rooms/[roomId]`
+- POST `/api/live/rooms/[roomId]/members`
+- DELETE `/api/live/rooms/[roomId]/members/[userId]`
+- POST `/api/live/rooms/[roomId]/start`
+- POST `/api/live/rooms/[roomId]/end`
+- GET `/api/live/realtime-token?roomId=...`
+
+11. Testing Plan
+
+11.1 For 1:1 video
+
+Manual:
+- same machine, two sessions
+- same network, two devices
+- different networks if possible
+- permission denied path
+- busy path
+- unanswered timeout path
+- refresh during active call
+
+Automated:
+- service tests for call timeout
+- service tests for busy prevention
+- service tests for authorization
+
+11.2 For live rooms
+
+Manual:
+- host creates room
+- approved viewer can join
+- unapproved viewer is denied
+- host starts session and viewer receives stream
+- host ends session and viewer sees ended state
+
+Automated:
+- room membership authorization tests
+- room start/end transition tests
+- token authorization tests
+
+12. Risks
+
+Risk 1:
+- trying to add live rooms before 1:1 is stable
+
+Consequence:
+- debugging becomes much harder because failures could be in either abstraction
+
+Risk 2:
+- peer-to-peer live viewer model used with too many viewers
+
+Consequence:
+- host-side performance collapses
+
+Risk 3:
+- no TURN in real usage
+
+Consequence:
+- connection failures and false bug reports
+
+Risk 4:
+- all signaling/UI logic remaining inside page components
+
+Consequence:
+- maintenance difficulty and higher bug rate
+
+13. Recommendation
+
+Recommended next implementation sequence:
+
+1. Finish 1:1 video properly
+2. Verify and harden it
+3. Then build live rooms with a dedicated `/live` route family
+
+Do not start the live room UI before the direct-call layer is stable enough to trust.
+
+14. Expected Outcome After This Plan
+
+If this plan is completed, the project should have:
+
+- a reliable 1:1 video calling experience inside direct chat
+- clear incoming/outgoing call UX
+- dedicated live room pages
+- one host able to go live
+- approved users able to watch
+
+Whether that live room uses peer-to-peer viewer links or an SFU should be decided before the live-room media layer is implemented in full.

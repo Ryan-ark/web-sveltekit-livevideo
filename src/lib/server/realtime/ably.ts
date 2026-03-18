@@ -1,6 +1,6 @@
 import Ably from 'ably';
 
-const CHAT_CAPABILITY_OPERATIONS = [
+const DEFAULT_CHANNEL_CAPABILITY_OPERATIONS = [
 	'subscribe',
 	'presence',
 	'history',
@@ -40,17 +40,35 @@ export function getChatChannelName(conversationId: string) {
 	return `private:chat:${conversationId}`;
 }
 
-export async function createChatTokenRequest(
+export function getCallChannelName(callId: string) {
+	return `private:call:${callId}`;
+}
+
+async function createScopedTokenRequest(
 	identity: ChatRealtimeIdentity,
-	conversationId: string
+	channelName: string
 ) {
-	const channelName = getChatChannelName(conversationId);
 	const client = getAblyRestClient();
 
 	return client.auth.createTokenRequest({
 		clientId: identity.userId,
 		capability: JSON.stringify({
-			[channelName]: CHAT_CAPABILITY_OPERATIONS
+			[channelName]: DEFAULT_CHANNEL_CAPABILITY_OPERATIONS
 		})
 	});
+}
+
+export async function createChatTokenRequest(
+	identity: ChatRealtimeIdentity,
+	conversationId: string
+) {
+	const channelName = getChatChannelName(conversationId);
+	return createScopedTokenRequest(identity, channelName);
+}
+
+export async function createCallTokenRequest(
+	identity: ChatRealtimeIdentity,
+	callId: string
+) {
+	return createScopedTokenRequest(identity, getCallChannelName(callId));
 }
