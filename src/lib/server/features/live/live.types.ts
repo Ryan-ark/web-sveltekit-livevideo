@@ -32,3 +32,16 @@ export type LiveRoomDetail = {
 	} | null;
 	currentUserRole: 'host' | 'viewer' | null;
 };
+
+export type LiveRoomConnectionInfo = {
+	roomId: string;
+	sessionId: string;
+	currentUserRole: 'host' | 'viewer';
+	hostUserId: string;
+	realtimeAuthUrl: string;
+	iceServers: Array<{
+		urls: string | string[];
+		username?: string;
+		credential?: string;
+	}>;
+};

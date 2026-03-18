@@ -44,6 +44,10 @@ export function getCallChannelName(callId: string) {
 	return `private:call:${callId}`;
 }
 
+export function getLiveRoomChannelName(roomId: string) {
+	return `private:live-room:${roomId}`;
+}
+
 async function createScopedTokenRequest(
 	identity: ChatRealtimeIdentity,
 	channelName: string
@@ -71,4 +75,11 @@ export async function createCallTokenRequest(
 	callId: string
 ) {
 	return createScopedTokenRequest(identity, getCallChannelName(callId));
+}
+
+export async function createLiveRoomTokenRequest(
+	identity: ChatRealtimeIdentity,
+	roomId: string
+) {
+	return createScopedTokenRequest(identity, getLiveRoomChannelName(roomId));
 }

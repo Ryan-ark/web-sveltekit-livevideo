@@ -1,6 +1,8 @@
 import { chatService } from '$server/features/chat/chat.service';
+import { mediaService } from '$server/features/media/media.service';
 import {
 	AuthorizationError,
+	ConflictError,
 	NotFoundError,
 	ValidationError
 } from '$server/shared/errors/app-error';
@@ -10,7 +12,11 @@ import { addLiveViewerSchema, createLiveRoomSchema } from './live.schema';
 import { liveRepository } from './live.repository';
 
 import type { AuthActor } from '$server/auth/permissions';
-import type { LiveRoomDetail, LiveRoomSummary } from './live.types';
+import type {
+	LiveRoomConnectionInfo,
+	LiveRoomDetail,
+	LiveRoomSummary
+} from './live.types';
 
 function toSummary(
 	roomMembership: Awaited<ReturnType<typeof liveRepository.listRoomsForUser>>[number],
@@ -98,6 +104,47 @@ export const liveService = {
 		}
 
 		return toDetail(room, actor.userId);
+	},
+
+	async assertRoomAccess(actor: AuthActor, roomId: string) {
+		const safeRoomId = parseUuid(roomId, 'roomId');
+		const room = await liveRepository.findRoomById(safeRoomId);
+
+		if (!room) {
+			throw new NotFoundError('Live room not found.', { roomId: safeRoomId });
+		}
+
+		const membership = room.members.find((member) => member.userId === actor.userId);
+
+		if (!membership || membership.joinStatus === 'removed') {
+			throw new AuthorizationError('You cannot access this live room.');
+		}
+
+		return {
+			room,
+			membership
+		};
+	},
+
+	async getRoomConnectionInfo(
+		actor: AuthActor,
+		roomId: string
+	): Promise<LiveRoomConnectionInfo> {
+		const { room, membership } = await this.assertRoomAccess(actor, roomId);
+		const activeSession = room.sessions[0] ?? null;
+
+		if (room.status !== 'live' || !activeSession || activeSession.status !== 'live') {
+			throw new ConflictError('This live room is not currently broadcasting.');
+		}
+
+		return {
+			roomId: room.id,
+			sessionId: activeSession.id,
+			currentUserRole: membership.role,
+			hostUserId: room.createdBy.id,
+			realtimeAuthUrl: `/api/live/realtime-token?resourceType=room&resourceId=${room.id}`,
+			iceServers: mediaService.getIceServers()
+		};
 	},
 
 	async addViewer(actor: AuthActor, roomId: string, input: unknown) {

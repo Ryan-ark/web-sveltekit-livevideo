@@ -1,16 +1,194 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { ActionData, PageData } from './$types';
 
+	import { createLiveRoomController } from '$lib/features/live/client/live-room-controller';
 	import Button from '$ui/components/button.svelte';
 	import FormField from '$ui/components/form-field.svelte';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
-	const room = $derived(form?.room ?? data.room);
+	type LiveRoom = PageData['room'];
+	type LiveRoomConnectionInfo = {
+		roomId: string;
+		sessionId: string;
+		currentUserRole: 'host' | 'viewer';
+		hostUserId: string;
+		realtimeAuthUrl: string;
+		iceServers: RTCIceServer[];
+	};
+
+	let roomState = $state<LiveRoom | null>(null);
+	const room = $derived(roomState ?? data.room);
 	const isHost = $derived(room.currentUserRole === 'host');
 	const approvedViewers = $derived(
 		room.members.filter((member) => member.role === 'viewer')
 	);
+	let localVideoElement = $state<HTMLVideoElement | null>(null);
+	let remoteVideoElement = $state<HTMLVideoElement | null>(null);
+	let liveConnectionState = $state('idle');
+	let liveNotice = $state('');
+	let liveError = $state('');
+	let isConnectingLive = $state(false);
+	let roomRefreshTimer: ReturnType<typeof setInterval> | null = null;
+	let isMounted = $state(false);
+	const currentUserId = $derived(data.auth.user?.id ?? '');
+
+	function log(...args: unknown[]) {
+		if (import.meta.env.DEV) {
+			console.log('[live-room-page]', ...args);
+		}
+	}
+
+	const liveRoomController = createLiveRoomController({
+		onConnectionStateChange: (state) => {
+			liveConnectionState = state;
+			isConnectingLive = state === 'preparing' || state === 'connecting' || state === 'new';
+
+			if (state === 'connected') {
+				liveNotice = isHost ? 'Broadcast connected.' : 'Live stream connected.';
+				liveError = '';
+			} else if (state === 'disconnected') {
+				liveNotice = isHost
+					? 'Viewer disconnected. Waiting for reconnect...'
+					: 'Host disconnected. Waiting for reconnect...';
+			}
+		},
+		onError: (message) => {
+			liveError = message;
+			isConnectingLive = false;
+		}
+	});
+
+	$effect(() => {
+		roomState = form?.room ?? data.room;
+	});
+
+	$effect(() => {
+		liveRoomController.setMediaElements(localVideoElement, remoteVideoElement);
+	});
+
+	$effect(() => {
+		if (!isMounted) {
+			return;
+		}
+
+		if (roomRefreshTimer) {
+			clearInterval(roomRefreshTimer);
+			roomRefreshTimer = null;
+		}
+
+		roomRefreshTimer = setInterval(() => {
+			void refreshRoom();
+		}, room.status === 'live' ? 10000 : 5000);
+
+		return () => {
+			if (roomRefreshTimer) {
+				clearInterval(roomRefreshTimer);
+				roomRefreshTimer = null;
+			}
+		};
+	});
+
+	$effect(() => {
+		if (!isMounted) {
+			return;
+		}
+
+		if (room.status === 'live' && room.activeSession) {
+			void connectToLiveRoom();
+			return;
+		}
+
+		liveNotice = room.status === 'ended' ? 'This live room has ended.' : '';
+		isConnectingLive = false;
+		liveConnectionState = 'idle';
+		void liveRoomController.disconnect();
+	});
+
+	async function refreshRoom() {
+		try {
+			const response = await fetch(`/api/live/rooms/${room.id}`);
+			const payload = await response.json();
+			log('refresh room response', {
+				roomId: room.id,
+				ok: response.ok,
+				payload
+			});
+
+			if (!response.ok) {
+				return;
+			}
+
+			roomState = payload.room as LiveRoom;
+		} catch {
+			// Ignore polling failures and keep current room snapshot.
+		}
+	}
+
+	async function connectToLiveRoom() {
+		if (liveConnectionState !== 'idle' && liveConnectionState !== 'closed') {
+			log('connectToLiveRoom skipped due to state', {
+				roomId: room.id,
+				liveConnectionState
+			});
+			return;
+		}
+
+		liveError = '';
+		liveNotice = isHost ? 'Starting camera and broadcast...' : 'Connecting to host stream...';
+		isConnectingLive = true;
+		log('connectToLiveRoom start', {
+			roomId: room.id,
+			role: room.currentUserRole
+		});
+
+		try {
+			const response = await fetch(`/api/live/rooms/${room.id}/connection`);
+			const payload = (await response.json()) as
+				| LiveRoomConnectionInfo
+				| { message?: string };
+			log('connection endpoint response', {
+				roomId: room.id,
+				ok: response.ok,
+				payload
+			});
+
+			if (!response.ok) {
+				throw new Error(
+					'message' in payload
+						? payload.message ?? 'Unable to connect the live room.'
+						: 'Unable to connect the live room.'
+				);
+			}
+
+			await liveRoomController.connect({
+				...(payload as LiveRoomConnectionInfo),
+				currentUserId
+			});
+
+			liveNotice = isHost ? 'Broadcast connected.' : 'Live stream connected.';
+			log('connectToLiveRoom complete', { roomId: room.id });
+		} catch (caught) {
+			log('connectToLiveRoom error', caught);
+			liveError =
+				caught instanceof Error ? caught.message : 'Unable to connect the live room.';
+		} finally {
+			isConnectingLive = false;
+		}
+	}
+
+	onMount(() => {
+		isMounted = true;
+
+		return () => {
+			isMounted = false;
+			if (roomRefreshTimer) {
+				clearInterval(roomRefreshTimer);
+			}
+			void liveRoomController.disconnect();
+		};
+	});
 </script>
 
 <section class="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
@@ -35,11 +213,27 @@
 			</p>
 		</div>
 
+		{#if liveNotice}
+			<div
+				class="mt-4 rounded-3xl border border-brand/20 bg-brand-soft/30 px-4 py-3 text-sm text-ink"
+			>
+				{liveNotice}
+			</div>
+		{/if}
+
 		{#if form?.message}
 			<div
 				class="mt-4 rounded-3xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger"
 			>
 				{form.message}
+			</div>
+		{/if}
+
+		{#if liveError}
+			<div
+				class="mt-4 rounded-3xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger"
+			>
+				{liveError}
 			</div>
 		{/if}
 
@@ -125,12 +319,48 @@
 			{/each}
 		</div>
 
-		<div class="mt-8 rounded-[1.75rem] border border-dashed border-line bg-canvas/40 p-6">
-			<p class="text-sm font-semibold text-ink">Streaming status</p>
-			<p class="mt-2 text-sm text-muted">
-				Phase B foundation is now in place: room creation, approved viewers, and host start/end state.
-				The actual host camera broadcast and watcher playback are still the next implementation step.
-			</p>
+		<div class="mt-8 grid gap-4">
+			{#if room.status === 'live'}
+				{#if isHost}
+					<div class="overflow-hidden rounded-[1.75rem] border border-line bg-ink">
+						<video
+							class="aspect-video w-full bg-black object-cover"
+							autoplay
+							playsinline
+							muted
+							bind:this={localVideoElement}
+						></video>
+						<div class="flex items-center justify-between px-4 py-3 text-xs uppercase tracking-[0.16em] text-white/80">
+							<span>You are live</span>
+							<span>{isConnectingLive ? 'Connecting' : liveConnectionState}</span>
+						</div>
+					</div>
+				{:else}
+					<div class="overflow-hidden rounded-[1.75rem] border border-line bg-ink">
+						<video
+							class="aspect-video w-full bg-black object-cover"
+							autoplay
+							playsinline
+							bind:this={remoteVideoElement}
+						></video>
+						<div class="flex items-center justify-between px-4 py-3 text-xs uppercase tracking-[0.16em] text-white/80">
+							<span>{room.host.name}</span>
+							<span>{isConnectingLive ? 'Connecting' : liveConnectionState}</span>
+						</div>
+					</div>
+				{/if}
+			{:else}
+				<div class="rounded-[1.75rem] border border-dashed border-line bg-canvas/40 p-6">
+					<p class="text-sm font-semibold text-ink">Streaming status</p>
+					<p class="mt-2 text-sm text-muted">
+						{#if isHost}
+							Start the live room to open your camera preview and begin broadcasting to approved viewers.
+						{:else}
+							When the host starts this room, the live video will appear here automatically.
+						{/if}
+					</p>
+				</div>
+			{/if}
 		</div>
 	</section>
 </section>
