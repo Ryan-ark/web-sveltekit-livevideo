@@ -1,0 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap');
+@import '$ui/styles/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+	:root {
+		color-scheme: light;
+	}
+
+	html {
+		scroll-behavior: smooth;
+	}
+
+	body {
+		@apply bg-canvas font-body text-ink antialiased;
+		background-image:
+			radial-gradient(
+				circle at top left,
+				hsl(var(--color-brand-soft) / 0.55),
+				transparent 32%
+			),
+			radial-gradient(
+				circle at bottom right,
+				hsl(var(--color-brand-soft) / 0.3),
+				transparent 30%
+			);
+		min-height: 100vh;
+	}
+
+	a {
+		@apply text-brand-strong transition-colors duration-200;
+	}
+
+	a:hover {
+		@apply text-brand;
+	}
+}
+
+@layer components {
+	.page-shell {
+		@apply mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8;
+	}
+
+	.panel {
+		@apply rounded-panel border border-line/80 bg-surface/95 shadow-panel backdrop-blur;
+	}
+
+	.kicker {
+		@apply text-xs font-semibold uppercase tracking-[0.24em] text-brand-strong;
+	}
+
+	.page-title {
+		@apply font-display text-4xl font-bold tracking-tight text-ink sm:text-5xl;
+	}
+
+	.page-copy {
+		@apply text-base leading-7 text-muted sm:text-lg;
+	}
+
+	.stat-tile {
+		@apply panel p-5;
+	}
+}

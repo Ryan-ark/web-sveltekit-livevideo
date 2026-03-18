@@ -1,0 +1,523 @@
+Implementation Plan: Realtime Chat With Typing Indicators
+
+Date: 2026-03-18
+Project: Project Pulse
+Status: Planning only. No implementation in this document.
+
+Objective
+
+Add authenticated chat pages to this SvelteKit app so two logged-in sessions can:
+- join the same conversation
+- send and receive messages in realtime
+- see when the other user is typing in realtime
+- preserve message history across reloads
+
+Primary recommendation
+
+Use Ably as the realtime transport layer and keep chat data in this app's PostgreSQL database.
+
+Why this is the right fit for this repo
+
+- The app is deployed with the Vercel adapter, and Vercel Functions do not support acting as a WebSocket server.
+- The app already has a clear server-side architecture: Better Auth, Drizzle, feature modules, and thin routes.
+- Chat history should remain in Postgres so the app owns its durable data and can render server-side page loads without depending on vendor history APIs.
+- Typing indicators and online presence are transient state and belong in the websocket layer, not the database.
+
+Important design decision
+
+Do not make Ably the system of record for messages.
+
+Instead:
+- Postgres stores conversations, memberships, and messages.
+- SvelteKit server actions or endpoints validate the user and write messages to Postgres.
+- After a successful write, the server publishes a realtime event to Ably.
+- Clients subscribe to Ably to update the UI instantly.
+- Typing indicators are sent directly through Ably and are not persisted.
+
+This keeps the architecture consistent with the current codebase.
+
+Current repo observations that influence the plan
+
+- Authentication is already available in `event.locals.user` and `event.locals.session` through Better Auth.
+- The layout load already exposes auth state to pages.
+- The app uses feature modules with `schema`, `repository`, `queries`, `service`, and `types`.
+- Existing business logic is server-only and route files stay thin.
+- Current app roles are `admin`, `manager`, and `member`.
+
+Implementation scope
+
+Phase 1 scope
+
+- 1:1 direct chat between authenticated users
+- conversation list page
+- conversation detail page
+- message history persisted in Postgres
+- realtime incoming messages
+- realtime typing indicators
+- basic online presence within a conversation
+- two-session manual test support
+
+Out of scope for Phase 1
+
+- group chat
+- attachments
+- read receipts
+- editing or deleting messages
+- push notifications
+- message search
+- moderation tooling
+
+Proposed product behavior
+
+User flows
+
+1. A logged-in user opens `/chat`.
+2. They see a list of conversations they belong to.
+3. They open one conversation at `/chat/[conversationId]`.
+4. Existing messages load from the database on initial page render.
+5. New messages appear instantly without refresh.
+6. While one user types, the other sees a typing indicator such as `Alice is typing...`.
+7. When typing stops or the user sends the message, the typing indicator disappears.
+
+Conversation rules for Phase 1
+
+- Only authenticated users can access chat routes.
+- A user may only view conversations where they are a participant.
+- A user may only publish messages to conversations where they are a participant.
+- A user may only subscribe to realtime events for conversations where they are a participant.
+
+Vendor integration plan
+
+Chosen vendor
+
+- Ably Realtime / Pub/Sub
+
+Why not use a raw in-app websocket server
+
+- Vercel does not support acting as a WebSocket server.
+
+Why not use vendor-managed chat history as the primary store
+
+- This repo already has a durable Postgres model and server-side rendering pattern.
+- Keeping history local avoids splitting core data across two systems.
+- Authorization rules remain under existing app control.
+
+How Ably will be used
+
+- Private, conversation-scoped channels
+- Server-issued token auth
+- Realtime publish for new messages
+- Realtime publish or presence update for typing indicators
+- Optional presence enter/leave for participant online status
+
+Channel strategy
+
+Use one channel per conversation.
+
+Suggested name pattern:
+- `private:chat:{conversationId}`
+
+Suggested event names:
+- `message.created`
+- `typing.started`
+- `typing.stopped`
+- `presence.updated` or use Ably presence directly
+
+Preferred auth model
+
+Use server-issued Ably token auth, not a public API key in the browser.
+
+Server responsibilities
+
+- Read the logged-in user from Better Auth session.
+- Verify requested conversation membership before granting channel capability.
+- Issue a short-lived Ably token scoped only to the channels the user may access.
+- Bind token identity to the authenticated app user ID.
+
+Client responsibilities
+
+- Initialize Ably using `authUrl` that points to an authenticated SvelteKit endpoint.
+- Subscribe only after the page confirms the user belongs to the conversation.
+- Clean up subscriptions on navigation and destroy.
+
+Data model plan
+
+Add new database tables.
+
+1. `chat_conversations`
+- `id`
+- `kind` with initial value `direct`
+- `createdAt`
+- `updatedAt`
+- optional `createdByUserId`
+
+2. `chat_conversation_members`
+- `conversationId`
+- `userId`
+- `joinedAt`
+- composite uniqueness on `(conversationId, userId)`
+
+3. `chat_messages`
+- `id`
+- `conversationId`
+- `senderUserId`
+- `body`
+- `createdAt`
+- optional `editedAt` reserved for later
+
+Optional later table
+
+4. `chat_message_reads`
+- not required for Phase 1
+
+Schema and relation work
+
+Add new Drizzle schema files under the existing schema structure.
+
+Suggested files:
+- `src/lib/server/db/schema/chat.ts`
+- update `src/lib/server/db/schema/index.ts`
+
+Feature module plan
+
+Create a new feature module that matches the existing repo pattern.
+
+Suggested files:
+- `src/lib/server/features/chat/chat.types.ts`
+- `src/lib/server/features/chat/chat.schema.ts`
+- `src/lib/server/features/chat/chat.repository.ts`
+- `src/lib/server/features/chat/chat.queries.ts`
+- `src/lib/server/features/chat/chat.service.ts`
+
+Responsibilities
+
+- `chat.schema.ts`
+  Validate create-conversation and send-message inputs with Zod.
+- `chat.repository.ts`
+  Raw inserts and updates.
+- `chat.queries.ts`
+  Read conversation lists, participants, and paginated messages.
+- `chat.service.ts`
+  Enforce auth and membership rules, coordinate persistence, and trigger realtime publishing.
+
+Routing plan
+
+Add chat routes without disturbing the current project/task flows.
+
+Suggested routes
+
+- `src/routes/chat/+page.server.ts`
+  Load the current user's conversations.
+- `src/routes/chat/+page.svelte`
+  Render the conversation list UI.
+- `src/routes/chat/[conversationId]/+page.server.ts`
+  Load conversation metadata, participants, and recent messages.
+- `src/routes/chat/[conversationId]/+page.svelte`
+  Render the message timeline, composer, typing indicator, and presence state.
+
+Recommended API or action endpoints
+
+- `src/routes/api/realtime/ably-token/+server.ts`
+  Authenticated token issuance endpoint.
+- Either:
+  - `src/routes/chat/[conversationId]/+page.server.ts` named action for sending messages
+  - or `src/routes/api/chat/conversations/[conversationId]/messages/+server.ts`
+
+Preferred choice
+
+Use an API endpoint for message sends instead of a normal form action.
+
+Reason:
+- chat send flows are more interactive than existing CRUD forms
+- easier optimistic UI handling
+- easier to return structured JSON
+- cleaner integration with realtime acknowledgements
+
+Server-side authorization plan
+
+Add chat-specific guard logic rather than overloading project permissions.
+
+New permission assumptions for Phase 1
+
+- any authenticated user may use chat
+- membership in the conversation is the real access control boundary
+
+Potential helper additions
+
+- `requireConversationMember(event, conversationId)`
+- `assertConversationMember(actor, conversationId)`
+
+This should live in the chat service or a small chat auth helper, not in the global project permission map unless chat becomes a broad app capability.
+
+Message send flow
+
+Proposed sequence
+
+1. User submits message from the conversation page.
+2. Client POSTs to the send-message endpoint.
+3. Server validates:
+   - authenticated user exists
+   - message body is non-empty and within max length
+   - user belongs to the conversation
+4. Server inserts message into `chat_messages`.
+5. Server publishes `message.created` to the Ably conversation channel with normalized payload.
+6. Server returns the saved message in JSON.
+7. Clients render the new message immediately from the realtime event.
+
+Persistence first rule
+
+Always persist before publishing.
+
+Reason:
+- if publish succeeds but DB write fails, clients will display phantom messages
+- DB-first keeps the stored record authoritative
+
+Client subscription plan
+
+Conversation page responsibilities
+
+- load initial message history from the server
+- create one Ably client for the logged-in browser session
+- attach to the current conversation channel
+- listen for `message.created`
+- append new messages if not already present
+- avoid duplicate rendering when the sender receives the same event back
+
+Duplicate prevention strategy
+
+Use message IDs generated on the server.
+
+Client rules
+
+- optimistic message may use a temporary local ID
+- when the server response or realtime event arrives, replace the temporary item with the persisted message ID
+- if the realtime event arrives first, dedupe by persisted ID
+
+Typing indicator plan
+
+Do not store typing state in Postgres.
+
+Recommended behavior
+
+- when the input becomes non-empty and the user presses keys, emit `typing.started`
+- throttle repeated typing events
+- if no new keystrokes occur for a timeout window, emit `typing.stopped`
+- immediately emit `typing.stopped` on message send, blur, route leave, or tab close when possible
+
+Suggested client timing
+
+- send start signal on first keystroke
+- refresh typing state at most every 2 to 3 seconds while the user continues typing
+- clear typing after 3 to 5 seconds of inactivity
+
+Typing payload shape
+
+- `conversationId`
+- `userId`
+- `userName`
+- `startedAt` or event timestamp
+
+Typing UI rules
+
+- do not show `You are typing...`
+- for one remote user: `Alice is typing...`
+- for two or more users later: `Several people are typing...`
+
+Typing cleanup requirements
+
+- clear local typing timer on component destroy
+- clear remote typing state on channel detach
+- clear remote typing state when a `typing.stopped` event arrives or timeout expires
+
+Presence plan
+
+Presence is optional for the initial acceptance test, but useful and cheap to include.
+
+Possible display
+
+- `Online now`
+- `Last active just now`
+
+Recommended implementation
+
+- enter Ably presence on conversation attach
+- leave on destroy if possible
+- display whether the other participant is currently connected to the same conversation channel
+
+Server-rendering and hydration plan
+
+Keep initial render SSR-driven.
+
+Page load should provide:
+- conversation metadata
+- member list
+- recent messages ordered ascending for display
+- current authenticated user info needed by the chat UI
+
+Realtime should only enhance after hydration.
+
+This avoids empty chat shells on first load.
+
+UI plan
+
+Chat list page
+
+- left-side or full-width list of conversations
+- participant name for direct chats
+- preview of latest message
+- timestamp of latest message
+- unread count can be omitted in Phase 1
+
+Conversation page
+
+- header with participant name and presence
+- scrollable message timeline
+- composer textarea or single-line input
+- send button
+- typing indicator area below the timeline or above the composer
+
+Important UI behavior
+
+- auto-scroll to bottom when the current user sends a message
+- auto-scroll when already near the bottom and a remote message arrives
+- do not force-scroll if the user has scrolled up to read history
+
+Validation rules
+
+Define explicit server-side rules.
+
+Suggested initial limits
+
+- message body required
+- trim whitespace
+- max message length: 1000 characters
+- reject empty-after-trim messages
+
+Security requirements
+
+- never expose Ably API keys in browser code
+- token endpoint must require authentication
+- token capability must be scoped to authorized conversation channels only
+- server must re-check conversation membership on every send-message request
+- client-side channel names must not be treated as authorization
+
+Operational plan
+
+Environment variables to add
+
+- `ABLY_API_KEY`
+- optional `ABLY_CLIENT_ID_PREFIX` if useful for debugging
+
+Update:
+- `.env.example`
+- production environment configuration in Vercel
+
+Package additions expected
+
+- Ably SDK for server and browser usage
+- possibly a small helper for shared event payload typing
+
+Testing plan
+
+Automated tests
+
+1. Service tests
+- create direct conversation
+- list only the authenticated user's conversations
+- deny access when a user is not a member
+- persist message successfully
+
+2. Schema tests
+- reject empty message
+- reject too-long message
+
+3. Route or endpoint tests
+- token endpoint rejects unauthenticated requests
+- token endpoint rejects unauthorized conversation access
+- send endpoint rejects non-members
+- send endpoint returns persisted message shape
+
+Manual two-session acceptance test
+
+Preparation
+
+- create at least two users
+- ensure both belong to the same direct conversation
+- log in with session A and session B in separate browsers or browser profiles
+
+Expected results
+
+1. Session A opens the chat page.
+2. Session B opens the same conversation.
+3. Session A types into the composer.
+4. Session B sees typing indicator within a couple of seconds.
+5. Session A pauses long enough and Session B sees typing indicator disappear.
+6. Session A sends a message.
+7. Session B receives the message without refresh.
+8. Session B replies and Session A receives it without refresh.
+9. Reload either page and message history remains because it is stored in Postgres.
+
+Failure cases to verify manually
+
+- non-member cannot open the conversation URL
+- non-member cannot fetch an Ably token for that conversation
+- typing indicator does not persist forever after tab close or route leave
+- duplicate messages are not rendered on reconnect
+
+Implementation order
+
+1. Add chat tables and Drizzle migration.
+2. Add chat schema exports and relations.
+3. Build chat repository, queries, service, and validation.
+4. Add authenticated token issuance endpoint for Ably.
+5. Add message send endpoint.
+6. Add chat list and chat conversation pages with SSR data loading.
+7. Add client-side Ably connection and message subscription.
+8. Add typing indicator behavior and cleanup.
+9. Add presence display.
+10. Add automated tests.
+11. Run manual two-session verification.
+
+Key risks and mitigations
+
+Risk: duplicate messages due to optimistic UI plus realtime echo
+Mitigation: dedupe by persisted server message ID
+
+Risk: over-broad Ably token permissions
+Mitigation: issue short-lived, channel-scoped tokens only after membership check
+
+Risk: typing indicators getting stuck
+Mitigation: inactivity timeout plus explicit stop events on send, blur, and destroy
+
+Risk: conversation authorization bugs
+Mitigation: membership checks in both SSR load and API endpoints
+
+Risk: chat route complexity drifting away from existing project conventions
+Mitigation: keep business logic in `src/lib/server/features/chat` and routes thin
+
+Recommended first implementation target
+
+Start with direct 1:1 chat only.
+
+Reason:
+- enough to validate realtime transport
+- enough to validate two-session communication
+- enough to validate typing indicators
+- avoids premature complexity in group membership and channel fanout
+
+Success criteria
+
+The implementation is successful when:
+
+- two authenticated sessions can open the same conversation
+- both sessions receive new messages instantly
+- both sessions can see remote typing indicators
+- refresh does not lose chat history
+- unauthorized users cannot access or subscribe to conversations they do not belong to
+
+Reference notes used for this plan
+
+- Vercel docs state that Vercel Functions do not support acting as a WebSocket server.
+- Ably supports token auth for client-side connections.
+- Ably supports typing or equivalent transient realtime events, which suits typing indicators.
+

@@ -1,0 +1,13 @@
+:root {
+	--color-canvas: 50 54% 96%;
+	--color-surface: 0 0% 100%;
+	--color-ink: 158 34% 12%;
+	--color-muted: 156 16% 35%;
+	--color-line: 155 18% 84%;
+	--color-brand: 166 72% 38%;
+	--color-brand-strong: 169 82% 24%;
+	--color-brand-soft: 160 65% 85%;
+	--color-success: 141 53% 38%;
+	--color-warning: 37 92% 50%;
+	--color-danger: 0 72% 52%;
+}

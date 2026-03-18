@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: project-pulse-postgres
+    environment:
+      POSTGRES_DB: project_pulse
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '55432:5432'
+    volumes:
+      - project-pulse-postgres:/var/lib/postgresql/data
+
+volumes:
+  project-pulse-postgres:
